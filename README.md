@@ -13,4 +13,5 @@ mybatis mapper xml auto reload
  * 对于CPU不给力和映射文件庞大的应用，有一定程度的性能问题。
 
 ###使用方式(很简单)
-`<bean class="com.thomas.mybatis.MybatisXmlMapperAutoReloader" ></bean>`
+1. 复制文件到自己的工程中 MybatisXmlMapperAutoReloader.java
+2. spring添加配置 `<bean class="com.thomas.mybatis.MybatisXmlMapperAutoReloader" ></bean>`
