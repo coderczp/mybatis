@@ -28,37 +28,58 @@ import org.springframework.core.io.Resource;
 import org.springframework.core.io.support.PathMatchingResourcePatternResolver;
 import org.springframework.core.io.support.ResourcePatternResolver;
 import org.springframework.util.ClassUtils;
+import org.springframework.util.StopWatch;
 import org.springframework.util.StringUtils;
 
 /**
- * 
+ *
  * 切莫用于生产环境（后果自负）
- * 
+ *
  * mybatis映射文件热加载（发生变动后自动重新加载）.
- * 
+ *
  * 方便开发时使用，不用每次修改xml文件后都要去重启应用.
- * 
+ *
  * 特性：
  * 		1.支持不同的数据源。
  * 		2.双线程实时监控，一个用来监控全局，一个用来实时监控热点文件。（100ms）（热点文件2分钟内没续修改自动过期）
  * 		3.对于CPU不给力和映射文件庞大的应用，有一定程度的性能问题。
- * 
+ *
  * @author thomas
- * @date Mar 31, 2016 5:55:01 PM
+ *
  *
  */
 public class MybatisXmlMapperAutoReloader implements DisposableBean, InitializingBean, ApplicationContextAware {
 
 	private ApplicationContext applicationContext;
 	private ScheduledExecutorService pool;
-	
+
 	// 多数据源的场景使用
+	private Boolean enableAutoReload = true;			// 是否启用热加载.
+	private String mapperLocations;						// 指定映射配置文件
 	private MapperScannerConfigurer config;
 	private SqlSessionFactory sqlSessionFactory;
-	
+
+	/**
+	 * 是否启用热加载.
+	 * @param config
+	 */
+	public void setEnableAutoReload(Boolean enableAutoReload) {
+		this.enableAutoReload = enableAutoReload;
+	}
+
+	/**
+	 * 指定映射配置文件.
+	 * @param config
+	 */
+	public void setMapperLocations(String mapperLocations) {
+		if(!StringUtils.isEmpty(mapperLocations)){
+			this.mapperLocations = mapperLocations;
+		}
+	}
+
 	/**
 	 * 设置配置对象.
-	 * 
+	 *
 	 * @param config
 	 */
 	public void setConfig(MapperScannerConfigurer config) {
@@ -67,7 +88,7 @@ public class MybatisXmlMapperAutoReloader implements DisposableBean, Initializin
 
 	/**
 	 * 设置数据源.
-	 * 
+	 *
 	 * @param sqlSessionFactory
 	 */
 	public void setSqlSessionFactory(SqlSessionFactory sqlSessionFactory) {
@@ -81,21 +102,27 @@ public class MybatisXmlMapperAutoReloader implements DisposableBean, Initializin
 
 	@Override
 	public void afterPropertiesSet() throws Exception {
-		
+
+		// 检查设置
+		if(!enableAutoReload){
+			System.out.println("禁用：mybatis自动热加载！");
+			return;
+		}else{
+			System.out.println("启用：mybatis自动热加载");
+		}
+
+		checkProperties();		// 检查属性
+
+		// 获取mapperLocations
+		String mapperLocations = getMapperLocations();
+
 		// 初始化线程池2个（避免线程来回切换）（一个用来监控全局，一个用来实时监控热点文件.）
 		pool = Executors.newScheduledThreadPool(2);
-		
-		checkProperties();		// 检查属性
-		
-		// 获取包名
-		Field field = config.getClass().getDeclaredField("basePackage");
-		field.setAccessible(true);
-		String basePackage = (String) field.get(config);
-        
-        // 配置扫描器.
-        final AutoReloadScanner scaner = new AutoReloadScanner(basePackage);
-        scaner.start();
-        
+
+    // 配置扫描器.
+    final AutoReloadScanner scaner = new AutoReloadScanner(mapperLocations);
+    scaner.start();
+
         // 扫描全部（2s一次）
 		pool.scheduleAtFixedRate(new Runnable() {
 			@Override
@@ -103,7 +130,7 @@ public class MybatisXmlMapperAutoReloader implements DisposableBean, Initializin
 				scaner.scanAllFileChange();
 			}
 		}, 2, 2, TimeUnit.SECONDS);
-		
+
 		// 扫描热点文件（100ms一次，监控更为频繁）
 		pool.scheduleAtFixedRate(new Runnable() {
 			@Override
@@ -111,21 +138,73 @@ public class MybatisXmlMapperAutoReloader implements DisposableBean, Initializin
 				scaner.scanHotspotFileChange();
 			}
 		}, 2, 100, TimeUnit.MILLISECONDS);
-		
+
+		System.out.println("启动mybatis自动热加载");
 	}
-	
+
+	/**
+	 * 获取配置文件路径（mapperLocations）.
+	 *
+	 * @return
+	 * @throws NoSuchFieldException
+	 * @throws IllegalAccessException
+	 * @throws Exception
+	 */
+	private String getMapperLocations() throws NoSuchFieldException, IllegalAccessException, Exception {
+
+		// 优先使用mapperLocations
+		if(mapperLocations != null){
+			return mapperLocations;
+		}
+
+		// 从MapperScannerConfigurer中获取.
+		if(config != null){
+			Field field = config.getClass().getDeclaredField("basePackage");
+			field.setAccessible(true);
+			return (String) field.get(config);
+		}
+
+		// 根本就获取不到 org.mybatis.spring.SqlSessionFactoryBean
+		// spring的org.springframework.beans.factory.FactoryBean 将其封装成为了一个 org.apache.ibatis.session.defaults.DefaultSqlSessionFactory
+		// 牛逼的spring
+//		if(sqlSessionFactory != null){
+//			Field field = sqlSessionFactory.getClass().getDeclaredField("mapperLocations");
+//			field.setAccessible(true);
+//			Resource[] mapperLocations = (Resource[]) field.get(sqlSessionFactory);
+//			StringBuilder sb = new StringBuilder();
+//			for(Resource r : mapperLocations){
+//				String n = r.getURL().toString();
+//				sb.append(n).append("\n");
+//			}
+//			return sb.toString();
+//		}
+		throw new RuntimeException("获取mapperLocations失败！");
+	}
+
 	/**
 	 * 检查属性，如果没有设置，直接初始化成默认的方式.
 	 */
 	private void checkProperties() {
 		// 如果没有指定数据源，直接使用默认的方式获取数据源
 		if(sqlSessionFactory == null){
-			sqlSessionFactory = applicationContext.getBean(SqlSessionFactory.class);
+			try {
+				sqlSessionFactory = applicationContext.getBean(SqlSessionFactory.class);
+			} catch (BeansException e) {
+				throw new RuntimeException("获取数据源失败！", e);
+			}
 		}
-		
+
 		// 如果没有指定配置文件，使用默认的方式获取配置文件
-		if(config == null){
-	        config = applicationContext.getBean(MapperScannerConfigurer.class);
+		if(config == null && mapperLocations == null){
+      try {
+				config = applicationContext.getBean(MapperScannerConfigurer.class);
+			} catch (BeansException e) {
+				System.err.println("获取配置文件失败！");
+			}
+		}
+
+		if(config == null && mapperLocations == null){
+			throw new RuntimeException("设置配置mapperLocations失败！，请设置好配置属性，否则自动热加载无法起作用!");
 		}
 	}
 
@@ -136,31 +215,33 @@ public class MybatisXmlMapperAutoReloader implements DisposableBean, Initializin
 		}
 		pool.shutdown(); // 是否线程池资源
 	}
-	
+
 	/**
 	 * 自动重载扫描器的具体实现
-	 * 
-	 * 
+	 *
+	 *
 	 * @author thomas
 	 * @date Mar 31, 2016 6:59:34 PM
 	 *
 	 */
 	class AutoReloadScanner {
-		
+
 		static final String XML_RESOURCE_PATTERN = "**/*.xml";
+		static final String CLASSPATH_ALL_URL_PREFIX = ResourcePatternResolver.CLASSPATH_ALL_URL_PREFIX;
+
 		static final int expireTimes = 600 * 2;		// 2分钟内没有继续修改，变成非热点文件.不进行实时监控.
-		
+
 		// 需要扫描的包
 		String[] basePackages;
-		
+
 		ResourcePatternResolver resourcePatternResolver = new PathMatchingResourcePatternResolver();
-		
+
 		// 所有文件
 		Map<String, String> files = new ConcurrentHashMap<String, String>();
-		
+
 		// 热点文件.
 		Map<String, AtomicInteger> hotspot = new ConcurrentHashMap<String, AtomicInteger>();
-		
+
 		public AutoReloadScanner(String basePackage) {
 			basePackages = StringUtils.tokenizeToStringArray(basePackage, ConfigurableApplicationContext.CONFIG_LOCATION_DELIMITERS);
 		}
@@ -169,12 +250,12 @@ public class MybatisXmlMapperAutoReloader implements DisposableBean, Initializin
 		 * 只扫描热点文件改变.（热点文件失效：连续600个扫描周期内（1分钟）没有改变）
 		 */
 		public void scanHotspotFileChange() {
-			
+
 			// 如果热点文件为空，立即返回.
 			if(hotspot.isEmpty()){
 				return;
 			}
-			
+
 			List<String> list = new ArrayList<String>();
 			for(Map.Entry<String, AtomicInteger> e : hotspot.entrySet()){
 				String url = e.getKey();
@@ -188,7 +269,7 @@ public class MybatisXmlMapperAutoReloader implements DisposableBean, Initializin
 					counter.set(0);		// 计数器清零
 				}
 			}
-			
+
 			// 移除过期的热点文件
 			if (!list.isEmpty()) {
 //				System.out.println("移除过期的热点文件：list=" + list);
@@ -200,30 +281,35 @@ public class MybatisXmlMapperAutoReloader implements DisposableBean, Initializin
 
 		/**
 		 * 重新加载文件.
-		 * 
+		 *
 		 * @param url
 		 */
 		private void reload(String url) {
-            reloadAll();		// 必须加载所有文件，否则其它文件由于没有加载会导致找不到对应的语句异常（暂时先这样吧）
+      reloadAll();		// 必须加载所有文件，否则其它文件由于没有加载会导致找不到对应的语句异常（暂时先这样吧）
 		}
-		
+
 		/**
 		 * 重新加载所有文件.
 		 */
 		private void reloadAll() {
+			StopWatch sw = new StopWatch("mybatis mapper auto reload");
+			sw.start();
 			Configuration configuration = getConfiguration();
 			for(Map.Entry<String, String> entry : files.entrySet()){
 				String location = entry.getKey();
 				Resource r = resourcePatternResolver.getResource(location);
 				try {
-	                XMLMapperBuilder xmlMapperBuilder = new XMLMapperBuilder(r.getInputStream(), configuration, r.toString(), configuration.getSqlFragments());
-	                xmlMapperBuilder.parse();
-	            } catch (Exception e) {
-	                throw new RuntimeException("Failed to parse mapping resource: '" + r + "'", e);
-	            } finally {
-	                ErrorContext.instance().reset();
-	            }
+          XMLMapperBuilder xmlMapperBuilder = new XMLMapperBuilder(r.getInputStream(), configuration, r.toString(), configuration.getSqlFragments());
+          xmlMapperBuilder.parse();
+        } catch (Exception e) {
+          throw new RuntimeException("Failed to parse mapping resource: '" + r + "'", e);
+        } finally {
+          ErrorContext.instance().reset();
+        }
 			}
+			sw.stop();
+//			System.out.println("重新加载mybatis映射文件完成.");
+			System.out.println(sw.shortSummary());
 		}
 
 		/**
@@ -245,7 +331,7 @@ public class MybatisXmlMapperAutoReloader implements DisposableBean, Initializin
 
 		/**
 		 * 判断文件是否变化.
-		 * 
+		 *
 		 * @param url
 		 * @param tag
 		 * @return
@@ -281,56 +367,58 @@ public class MybatisXmlMapperAutoReloader implements DisposableBean, Initializin
 		 * 开启扫描服务
 		 */
 		public void start() {
-            try {
+    	try {
 				for (String basePackage : basePackages) {
-				    Resource[] resources = getResource(basePackage, XML_RESOURCE_PATTERN);
+				    Resource[] resources = getResource(basePackage);
 				    if (resources != null) {
-				        for(Resource r : resources) {
-				            String tag = getTag(r);
-				            files.put(r.getURL().toString(), tag);
-				        }
+			        for(Resource r : resources) {
+		            String tag = getTag(r);
+		            files.put(r.getURL().toString(), tag);
+			        }
 				    }
 				}
 			} catch (Exception e) {
 				throw new RuntimeException("初始化扫描服务失败！", e);
 			}
 		}
-		
+
 		/**
 		 * 获取xml文件资源.
-		 * 
+		 *
 		 * @param basePackage
 		 * @param pattern
 		 * @return
 		 * @throws IOException
 		 */
-        public Resource[] getResource(String basePackage, String pattern) {
-            try {
-				String packageSearchPath = ResourcePatternResolver.CLASSPATH_ALL_URL_PREFIX + ClassUtils.convertClassNameToResourcePath(applicationContext.getEnvironment().resolveRequiredPlaceholders(basePackage)) + "/" + pattern;
-				Resource[] resources = resourcePatternResolver.getResources(packageSearchPath);
+    public Resource[] getResource(String basePackage) {
+      try {
+      	if(!basePackage.startsWith(CLASSPATH_ALL_URL_PREFIX)){
+      		basePackage = CLASSPATH_ALL_URL_PREFIX + ClassUtils.convertClassNameToResourcePath(applicationContext.getEnvironment().resolveRequiredPlaceholders(basePackage)) + "/" + XML_RESOURCE_PATTERN;
+      	}
+				Resource[] resources = resourcePatternResolver.getResources(basePackage);
 				return resources;
 			} catch (Exception e) {
 				throw new RuntimeException("获取xml文件资源失败！basePackage=" + basePackage, e);
 			}
-        }
-        
-        /**
-         * 获取配置信息，必须每次都重新获取，否则重新加载xml不起作用.
-         * @return
-         */
-        private Configuration getConfiguration() {
-            Configuration configuration = sqlSessionFactory.getConfiguration();
-            removeConfig(configuration);
-            return configuration;
+    }
+
+    /**
+     * 获取配置信息，必须每次都重新获取，否则重新加载xml不起作用.
+     * @return
+     */
+    private Configuration getConfiguration() {
+      Configuration configuration = sqlSessionFactory.getConfiguration();
+      removeConfig(configuration);
+      return configuration;
 		}
 
 		/**
-         * 删除不必要的配置项.
-         * @param configuration
-         * @throws Exception
-         */
-        private void removeConfig(Configuration configuration) {
-            try {
+     * 删除不必要的配置项.
+     * @param configuration
+     * @throws Exception
+     */
+    private void removeConfig(Configuration configuration) {
+      try {
 				Class<?> classConfig = configuration.getClass();
 				clearMap(classConfig, configuration, "mappedStatements");
 				clearMap(classConfig, configuration, "caches");
@@ -342,24 +430,24 @@ public class MybatisXmlMapperAutoReloader implements DisposableBean, Initializin
 			} catch (Exception e) {
 				e.printStackTrace();
 			}
-        }
-        
-        @SuppressWarnings("rawtypes")
+    }
+
+    @SuppressWarnings("rawtypes")
 		private void clearMap(Class<?> classConfig, Configuration configuration, String fieldName) throws Exception {
-            Field field = classConfig.getDeclaredField(fieldName);
-            field.setAccessible(true);
-            Map mapConfig = (Map) field.get(configuration);
-            mapConfig.clear();
-        }
-        
-        @SuppressWarnings("rawtypes")
+      Field field = classConfig.getDeclaredField(fieldName);
+      field.setAccessible(true);
+      Map mapConfig = (Map) field.get(configuration);
+      mapConfig.clear();
+    }
+
+    @SuppressWarnings("rawtypes")
 		private void clearSet(Class<?> classConfig, Configuration configuration, String fieldName) throws Exception {
-            Field field = classConfig.getDeclaredField(fieldName);
-            field.setAccessible(true);
-            Set setConfig = (Set) field.get(configuration);
-            setConfig.clear();
-        }
-		
+      Field field = classConfig.getDeclaredField(fieldName);
+      field.setAccessible(true);
+      Set setConfig = (Set) field.get(configuration);
+      setConfig.clear();
+    }
+
 	}
 
 }
