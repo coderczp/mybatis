@@ -16,7 +16,7 @@ mybatis mapper xml auto reload
 1. 复制文件到自己的工程中 MybatisXmlMapperAutoReloader.java
 2. spring添加配置 `<bean class="com.thomas.mybatis.MybatisXmlMapperAutoReloader" ></bean>`
 
-## 可选配置说明
+###可选配置说明
 	<!-- mybatis自动热加载 -->
 	<bean class="com.thomas.mybatis.MybatisXmlMapperAutoReloader" >
 	
